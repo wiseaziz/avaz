@@ -1241,8 +1241,8 @@ const API = {
 };
 function encPath(p){ return String(p).split('/').map(encodeURIComponent).join('/'); }
 function errMsg(e){
-  const c = String(e && (e.error_code || e.code) || ''), m = String(e && (e.message || e.msg || e.error_description) || '');
-  const map = {not_enough_units:'err_units', duplicate_request:'err_dup', rating_window_closed:'err_window', already_rated:'err_already', reason_required:'reason_required', comment_too_short:'min_comment', invalid_scores:'rate_all', gender_mismatch:'gender_mismatch', listing_unavailable:'full_now', invalid_credentials:'err_creds', invalid_grant:'err_creds', user_already_exists:'err_exists', email_exists:'err_exists', weak_password:'err_weak', email_address_invalid:'err_email', over_request_rate_limit:'err_rate', over_email_send_rate_limit:'err_rate', email_not_confirmed:'err_confirm', confirm_email:'err_confirm', network:'err_net', session_expired:'session_expired'};
+  const c = String(e && (e.error_code || e.code || e.error) || ''), m = String(e && (e.message || e.msg || e.error_description) || '');
+  const map = {not_enough_units:'err_units', duplicate_request:'err_dup', rating_window_closed:'err_window', already_rated:'err_already', reason_required:'reason_required', comment_too_short:'min_comment', invalid_scores:'rate_all', gender_mismatch:'gender_mismatch', listing_unavailable:'full_now', invalid_credentials:'err_creds', invalid_grant:'err_creds', user_already_exists:'err_exists', email_exists:'err_exists', weak_password:'err_weak', email_address_invalid:'err_email', over_request_rate_limit:'err_rate', over_email_send_rate_limit:'err_email_limit', tenants_only:'not_open_host', daily_limit:'ai_limit', ai_not_configured:'ai_unavailable', ai_failed:'ai_unavailable', email_not_confirmed:'err_confirm', confirm_email:'err_confirm', network:'err_net', session_expired:'session_expired'};
   for(const k in map){ if(c===k || m.indexOf(k)>=0) return t(map[k]); }
   if(/invalid login/i.test(m)) return t('err_creds');
   if(/already registered/i.test(m)) return t('err_exists');
@@ -1255,8 +1255,8 @@ function errMsg(e){
 }
 
 /* ================= map database rows to app objects ================= */
-function mapProfile(p){ return {id:p.id, role:p.role, name:p.name, nat:p.nat, job:p.job, lang:p.lang, gender:p.gender, av:p.av, city:p.city, prefs:p.prefs||{}, verified:!!p.verified, joined:p.created_at}; }
-function mapListing(l){ return {id:l.id, host:l.host, name:l.name||{}, type:l.type, city:l.city, district:l.district, near:Object.assign({ar:'',en:'',km:0}, l.near||{}), gender:l.gender, price:+l.price, total:+l.total, free:+l.free, amen:l.amen||[], rules:l.rules||[], langs:l.langs||[], licensed:!!l.licensed, desc:l.descr||{}, media:Array.isArray(l.media)?l.media:[], views:+l.views||0, archived:!!l.archived, created:l.created_at}; }
+function mapProfile(p){ return {id:p.id, role:p.role, name:p.name, nat:p.nat, job:p.job, lang:p.lang, gender:p.gender, av:p.av, city:p.city, prefs:p.prefs||{}, cr:p.cr, workforce:p.workforce, verified:!!p.verified, joined:p.created_at}; }
+function mapListing(l){ return {id:l.id, host:l.host, name:l.name||{}, type:l.type, city:l.city, district:l.district, near:Object.assign({ar:'',en:'',km:0}, l.near||{}), gender:l.gender, price:+l.price, total:+l.total, free:+l.free, amen:l.amen||[], rules:l.rules||[], langs:l.langs||[], licensed:!!l.licensed, desc:l.descr||{}, media:Array.isArray(l.media)?l.media:[], views:+l.views||0, capacity:l.capacity, apartments:l.apartments, archived:!!l.archived, created:l.created_at}; }
 function mapBooking(b){ return {id:b.id, listing:b.listing, worker:b.worker, host:b.host, units:+b.units, months:+b.months, moveIn:b.move_in, status:b.status, created:b.created_at, endedAt:b.ended_at}; }
 function mapReview(r){ return {id:r.id, booking:r.booking, from:r.from_id, to:r.to_id, listing:r.listing, kind:r.kind, sc:r.sc||{}, overall:Number(r.overall), text:{l:r.body_lang||'', s:r.body||''}, date:r.created_at, revealed:!!r.revealed, reply:null}; }
 
@@ -1273,15 +1273,15 @@ async function sync(){
         API.get('bookings?select=*&order=created_at.desc'),
         API.get('reviews?select=*&order=created_at.desc'),
         API.get('saved?select=listing'),
-        API.get('user_stats?select=*'),
+        API.rpc('user_stats_list',{}).catch(()=>API.get('user_stats?select=*')),
         API.get('contacts?select=*')
       ]);
       const mine = profiles.find(p=>p.id===uid);
       let searches = [];
       if(mine && mine.role==='host'){
         const since = new Date(Date.now()-30*DAY).toISOString();
-        searches = (await API.get('searches?select=city,type,budget,nat,amen,created_at&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=3000'))
-          .map(s=>({city:s.city, type:s.type, budget:+s.budget||0, nat:s.nat, amen:s.amen||[], ts:new Date(s.created_at).getTime()}));
+        searches = (await API.get('searches?select=city,type,budget,nat,amen,who,workers,created_at&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=3000'))
+          .map(s=>({city:s.city, type:s.type, budget:+s.budget||0, nat:s.nat, amen:s.amen||[], who:s.who, workers:+s.workers||0, ts:new Date(s.created_at).getTime()}));
       }
       S.users = profiles.map(mapProfile);
       S.listings = listings.map(mapListing);
@@ -1300,6 +1300,131 @@ async function sync(){
   })();
   return SYNCING;
 }
+/* ================= patch 2: strings ================= */
+Object.assign(T, {
+i_company:["شركة أو مؤسسة","Company or organization","کمپنی یا ادارہ","Kumpanya o organisasyon","कंपनी या संस्था"],
+i_company_sub:["سكّن عمالتك: عماير كاملة ومجمعات وأسرّة بالجملة","House your workforce: whole buildings, compounds and beds in bulk","اپنے عملے کی رہائش: پوری عمارتیں، کمپاؤنڈ اور بڑی تعداد میں بستر","Pabahay ng iyong mga manggagawa: buong gusali, compound at maramihang kama","अपने कर्मचारियों का आवास: पूरी इमारतें, कंपाउंड और थोक में बेड"],
+reg_company:["حساب شركة","Company account","کمپنی اکاؤنٹ","Account ng kumpanya","कंपनी अकाउंट"],
+org_name:["اسم الشركة أو المؤسسة","Company or organization name","کمپنی یا ادارے کا نام","Pangalan ng kumpanya o organisasyon","कंपनी या संस्था का नाम"],
+cr_no:["رقم السجل التجاري (اختياري)","Commercial registration no. (optional)","کمرشل رجسٹریشن نمبر (اختیاری)","Numero ng commercial registration (opsyonal)","वाणिज्यिक पंजीकरण संख्या (वैकल्पिक)"],
+cr_bad:["رقم السجل التجاري 10 أرقام","The commercial registration number is 10 digits","کمرشل رجسٹریشن نمبر 10 ہندسوں کا ہوتا ہے","10 digit ang commercial registration number","वाणिज्यिक पंजीकरण संख्या 10 अंकों की होती है"],
+cr_l:["س.ت {n}","CR {n}","سی آر {n}","CR {n}","सीआर {n}"],
+workforce:["عدد العمالة اللي تبي تسكّنهم","Number of workers to house","رہائش کے لیے مزدوروں کی تعداد","Bilang ng manggagawang patitirahin","रहने वाले कामगारों की संख्या"],
+workforce_g:["جنس العمالة","Workers' gender","مزدوروں کی جنس","Kasarian ng mga manggagawa","कामगारों का लिंग"],
+workforce_n:["{n} عامل","{n} workers","{n} مزدور","{n} manggagawa","{n} कामगार"],
+budget_worker:["الميزانية الشهرية لكل عامل","Monthly budget per worker","فی مزدور ماہانہ بجٹ","Buwanang badyet bawat manggagawa","प्रति कामगार मासिक बजट"],
+p_company:["شركة","Company","کمپنی","Kumpanya","कंपनी"],
+as_company:["كشركة مستأجرة","As a company tenant","بطور کمپنی کرایہ دار","Bilang kumpanyang nangungupahan","कंपनी किरायेदार के रूप में"],
+explore_title_co:["سكّن عمالتك بسهولة","House your workforce","اپنے عملے کو آسانی سے رہائش دیں","Patirahin ang iyong mga manggagawa","अपने कर्मचारियों को आसानी से ठहराएँ"],
+co_demand:["منها {n} بحث من شركات، بمتوسط {w} عامل للشركة","{n} of them by companies, averaging {w} workers each","ان میں سے {n} کمپنیوں کی، اوسطاً {w} مزدور فی کمپنی","{n} rito ay mula sa kumpanya, average na {w} manggagawa","इनमें {n} कंपनियों की, औसतन {w} कामगार प्रति कंपनी"],
+t_building:["عمارة كاملة","Whole building","پوری عمارت","Buong gusali","पूरी इमारत"],
+ts_building:["عمارة","Building","عمارت","Gusali","इमारत"],
+per_building:["للعمارة كاملة","whole building","پوری عمارت","buong gusali","पूरी इमारत"],
+price_building:["الإيجار الشهري للعمارة كاملة (ر.س)","Monthly rent for the whole building (SAR)","پوری عمارت کا ماہانہ کرایہ (ریال)","Buwanang upa sa buong gusali (SAR)","पूरी इमारत का मासिक किराया (रियाल)"],
+cap_total:["كم عامل تسكّن العمارة","Workers the building houses","عمارت میں کتنے مزدور رہ سکتے ہیں","Ilang manggagawa ang kasya sa gusali","इमारत में कितने कामगार रह सकते हैं"],
+cap_unit:["كم عامل يسكن في كل وحدة","Workers per unit","فی یونٹ کتنے مزدور","Ilang manggagawa bawat unit","प्रति यूनिट कितने कामगार"],
+apartments:["عدد الشقق أو الغرف","Apartments or rooms","فلیٹس یا کمرے","Mga apartment o kuwarto","फ़्लैट या कमरे"],
+need_capacity:["اكتب كم عامل تسكّن العمارة","Enter how many workers the building houses","لکھیں کہ عمارت میں کتنے مزدور رہ سکتے ہیں","Ilagay kung ilang manggagawa ang kasya sa gusali","लिखें कि इमारत में कितने कामगार रह सकते हैं"],
+fits_n:["يسكّن حتى {n} عامل","Houses up to {n} workers","{n} مزدوروں تک کی رہائش","Kasya hanggang {n} manggagawa","{n} कामगारों तक के लिए"],
+per_unit_cap:["{n} عامل في كل وحدة","{n} workers per unit","فی یونٹ {n} مزدور","{n} manggagawa bawat unit","प्रति यूनिट {n} कामगार"],
+apts_n:["{n} شقة أو غرفة","{n} apartments or rooms","{n} فلیٹس یا کمرے","{n} apartment o kuwarto","{n} फ़्लैट या कमरे"],
+per_worker:["{p} لكل عامل","{p} per worker","فی مزدور {p}","{p} bawat manggagawa","{p} प्रति कामगार"],
+cost_ok:["تكلفة العامل ضمن ميزانيتك ({b})","Cost per worker is within your budget ({b})","فی مزدور لاگت آپ کے بجٹ میں ہے ({b})","Pasok sa badyet ang gastos bawat manggagawa ({b})","प्रति कामगार लागत आपके बजट में है ({b})"],
+cost_over:["تكلفة العامل أعلى من ميزانيتك بـ {n}","Cost per worker is {n} over your budget","فی مزدور لاگت آپ کے بجٹ سے {n} زیادہ ہے","{n} lampas sa badyet ang gastos bawat manggagawa","प्रति कामगार लागत आपके बजट से {n} ज़्यादा है"],
+cap_ok:["تكفي عمالتك ({n} عامل)","Fits your workforce ({n} workers)","آپ کے {n} مزدوروں کے لیے کافی","Kasya ang {n} mong manggagawa","आपके {n} कामगारों के लिए पर्याप्त"],
+cap_part:["تكفي {a} من {b} عامل","Fits {a} of your {b} workers","{b} میں سے {a} مزدوروں کے لیے","Kasya ang {a} sa {b} manggagawa","{b} में से {a} कामगारों के लिए"],
+book_all:["احجز كل المتاح ({n})","Book all available ({n})","تمام دستیاب بک کریں ({n})","I-book lahat ng bakante ({n})","सभी उपलब्ध बुक करें ({n})"],
+confirm_book_t:["تأكيد طلب الحجز","Confirm booking request","بکنگ درخواست کی تصدیق","Kumpirmahin ang booking request","बुकिंग अनुरोध की पुष्टि"],
+confirm_book_q:["متأكد تبي ترسل طلب الحجز هذا للمؤجر؟","Send this booking request to the host?","کیا یہ بکنگ درخواست مالک کو بھیجنی ہے؟","Ipadala ang booking request na ito sa host?","क्या यह बुकिंग अनुरोध मेज़बान को भेजें?"],
+confirm_end_t:["تأكيد إنهاء الإقامة","Confirm end of stay","قیام ختم کرنے کی تصدیق","Kumpirmahin ang pagtatapos","ठहराव ख़त्म करने की पुष्टि"],
+confirm_end_q:["متأكد تبي تنهي هذي الإقامة؟ ما يمكن التراجع عنها، والوحدات ترجع متاحة، وتبدأ مدة التقييم 14 يوماً.","End this stay? This can't be undone. The units become available again and the 14-day rating window starts.","کیا یہ قیام ختم کرنا ہے؟ یہ واپس نہیں ہو سکتا۔ یونٹس دوبارہ دستیاب ہو جائیں گے اور 14 دن کی ریٹنگ کی مدت شروع ہوگی۔","Tapusin ang pananatiling ito? Hindi na ito mababawi. Magiging bakante ulit ang mga unit at magsisimula ang 14 na araw ng pag-rate.","क्या यह ठहराव ख़त्म करें? इसे वापस नहीं किया जा सकता। यूनिट फिर से उपलब्ध होंगी और 14 दिन की रेटिंग अवधि शुरू होगी।"],
+yes_send:["نعم، أرسل الطلب","Yes, send request","جی ہاں، درخواست بھیجیں","Oo, ipadala","हाँ, अनुरोध भेजें"],
+yes_end:["نعم، أنهِ الإقامة","Yes, end stay","جی ہاں، قیام ختم کریں","Oo, tapusin","हाँ, ठहराव ख़त्म करें"],
+no_back:["لا، رجوع","No, go back","نہیں، واپس","Hindi, bumalik","नहीं, वापस"],
+ai_limit:["وصلت الحد اليومي للميزات الذكية. جرّب بكرة.","You've reached today's limit for smart features. Try again tomorrow.","سمارٹ فیچرز کی آج کی حد پوری ہو گئی۔ کل دوبارہ کوشش کریں۔","Naabot mo na ang limit ngayong araw. Subukan bukas.","आज की स्मार्ट फ़ीचर सीमा पूरी हो गई। कल फिर कोशिश करें।"],
+err_email_limit:["خدمة رسائل التأكيد وصلت حدها. جرّب بعد ساعة.","The confirmation email service hit its limit. Try again in an hour.","تصدیقی ای میل سروس کی حد پوری ہو گئی۔ ایک گھنٹے بعد کوشش کریں۔","Naabot ng email service ang limit. Subukan pagkalipas ng isang oras.","पुष्टि ईमेल सेवा की सीमा पूरी हो गई। एक घंटे बाद कोशिश करें।"]
+});
+
+/* ================= patch 2: helpers ================= */
+IC.tower = '<rect x="5" y="2" width="14" height="20" rx="1.5"/><path d="M9 6h1.5M13.5 6H15M9 10h1.5M13.5 10H15M9 14h1.5M13.5 14H15M10.5 22v-4h3v4"/>';
+if(!TYPES.includes('building')) TYPES.push('building');
+TYPE_IC.building = 'tower';
+function isTenant(u){ return !!u && (u.role==='worker' || u.role==='company'); }
+function isCo(u){ return !!u && u.role==='company'; }
+const DEF_CAP = {room:1, studio:2, apt:4, building:20};
+function perUnit(l){ return (l.type==='bed'||l.type==='compound') ? 1 : Math.max(1, +l.capacity || DEF_CAP[l.type] || 1); }
+function fitsNow(l){ return l.free * perUnit(l); }
+function costPerWorker(l){ return l.price / perUnit(l); }
+function maxUnits(l){ return l.type==='building' ? 1 : Math.max(1, isCo(me()) ? l.free : Math.min(l.free, 20)); }
+function refPrice(l){ if(l.type==='building'){ const b=marketRef(l.city,'bed'); return {m:b.m*perUnit(l), est:true}; } return marketRef(l.city,l.type,l.id); }
+function coLabel(u){ return t('p_company')+(u.cr?' · '+t('cr_l',{n:u.cr}):'')+(u.workforce?' · '+t('workforce_n',{n:n(u.workforce)}):''); }
+function capLine(l){
+  const co=isCo(me());
+  if(l.type==='bed'||l.type==='compound') return co ? `<p class="small row wrap" style="gap:6px">${ic('users',15)} ${t('fits_n',{n:n(fitsNow(l))})} · ${t('per_worker',{p:money(costPerWorker(l))})}</p>` : '';
+  const pu=perUnit(l);
+  return `<p class="small row wrap" style="gap:6px">${ic('users',15)} ${l.type==='building'?t('fits_n',{n:n(pu)}):t('per_unit_cap',{n:pu})}${l.apartments?' · '+t('apts_n',{n:l.apartments}):''}${co?' · '+t('per_worker',{p:money(costPerWorker(l))}):''}</p>`;
+}
+function matchCompany(l,u){ const p=u.prefs||{}, need=Math.max(1,+u.workforce||1), b=p.budget||450;
+  return memo('mc:'+l.id+':'+u.id+':'+need+':'+b+':'+p.city+':'+(p.amen||[]).join(','), ()=>{
+    const reasons=[]; let s=0; const cpw=costPerWorker(l), fits=fitsNow(l);
+    if(cpw<=b){ s+=30; reasons.push({k:'ok',t:t('cost_ok',{b:money(b)})}); }
+    else { const over=cpw-b; s+=Math.max(0,30-over/b*100); reasons.push({k:'no',t:t('cost_over',{n:money(over)})}); }
+    if(fits>=need){ s+=25; reasons.push({k:'ok',t:t('cap_ok',{n:n(need)})}); }
+    else if(fits>0){ s+=25*fits/need; reasons.push({k:'no',t:t('cap_part',{a:n(fits),b:n(need)})}); }
+    else reasons.push({k:'bad',t:t('full_now')});
+    const nearTxt = l.near && (l.near.ar||l.near.en) ? ' · '+t('km_to',{n:l.near.km,p:esc(pn(l.near))}) : '';
+    if(!p.city || l.city===p.city){ s+=15; reasons.push({k:'ok',t:t('in_city')+nearTxt}); } else reasons.push({k:'no',t:t('other_city')});
+    const want=p.amen||[], have=want.filter(a=>l.amen.includes(a));
+    if(want.length){ s+=have.length/want.length*15; reasons.push({k:have.length===want.length?'ok':'no',t:t('has_wanted',{n:have.length,m:want.length})}); } else s+=10;
+    if(l.licensed){ s+=10; reasons.push({k:'ok',t:t('licensed')}); } else reasons.push({k:'no',t:t('not_licensed')});
+    const r=ratingOf('listing',l.id); s += r.n ? r.bayes/5*5 : 3;
+    const gOK=genderOK(l,u); if(!gOK){ s*=0.2; reasons.unshift({k:'bad',t:l.gender==='women'?t('only_women'):t('only_men')}); }
+    return {score:Math.round(Math.min(100,s)), reasons, gOK};
+  }); }
+function edUnitsHTML(d){
+  const num=(id,lab,val,min)=>`<label class="field"><span>${lab}</span><input class="input num" id="ed-${id}" data-in="ed" name="${id}" type="number" inputmode="numeric" min="${min}" value="${esc(val)}"></label>`;
+  if(d.type==='building') return `<div class="fgrid">${num('price',t('price_building'),d.price,1)}${num('capacity',t('cap_total'),d.capacity,1)}${num('apartments',t('apartments'),d.apartments,1)}</div>`;
+  const cap = (d.type==='room'||d.type==='studio'||d.type==='apt') ? num('capacity',t('cap_unit'),d.capacity,1) : '';
+  return `<div class="fgrid">${num('price',t('price_month'),d.price,1)}${num('total',t('total_units'),d.total,1)}${num('free',t('free_now'),d.free,0)}${cap}</div>`;
+}
+function sheetConfirm(){
+  const s=UI.sheet;
+  if(s.kind==='book'){
+    const b=s.back, l=L(b.id); if(!l) return '';
+    const pu=perUnit(l), co=isCo(me()), bld=l.type==='building';
+    const row=(k,v,strong)=>`<div class="row between ${strong?'':'small'}"><span class="${strong?'b':'muted'}">${k}</span><span class="num ${strong?'b':''}">${v}</span></div>`;
+    return sheetFrame(t('confirm_book_t'),`
+      <p>${t('confirm_book_q')}</p>
+      <div class="panel stack" style="gap:8px;background:var(--surface-2)">
+        <b>${esc(pn(l.name))}</b>
+        ${row(bld?t('t_building'):t('units_count'), bld?t('fits_n',{n:n(pu)}):n(b.units)+(co?' · '+t('fits_n',{n:n(b.units*pu)}):''))}
+        ${row(t('move_in'), fmtDate(b.date||todayISO(7)))}
+        ${row(t('months'), monthsTxt(b.months))}
+        ${row(t('monthly'), money(l.price*b.units))}
+        ${row(t('total'), money(l.price*b.units*b.months), true)}
+      </div>
+      <p class="note">${ic('info',14)} ${t('pay_note')}</p>`,
+      `<button type="button" class="btn" data-a="closeSheet">${t('no_back')}</button><button type="button" class="btn primary grow" data-a="bkSend" ${UI.busy?'disabled':''}>${t('yes_send')}</button>`);
+  }
+  const b=S.bookings.find(x=>x.id===s.id); if(!b) return '';
+  const l=L(b.listing)||{id:'',name:'',media:[],type:'bed'}, other=U(S.userId===b.host?b.worker:b.host);
+  return sheetFrame(t('confirm_end_t'),`
+    <div class="row" style="gap:12px"><div class="avatar" style="width:60px;height:60px;border-radius:14px">${thumb(l)}</div><div class="stack" style="gap:2px;min-width:0"><b>${esc(pn(l.name))}</b><span class="small muted">${other?esc(pn(other.name)):''}</span></div></div>
+    <div class="ai" style="background:var(--warn-tint)"><div class="ai-h" style="color:var(--warn)">${ic('alert',16)} ${t('confirm_end_t')}</div><span>${t('confirm_end_q')}</span></div>`,
+    `<button type="button" class="btn" data-a="closeSheet">${t('no_back')}</button><button type="button" class="btn danger grow" data-a="endStay" data-id="${b.id}" ${UI.busy?'disabled':''}>${t('yes_end')}</button>`);
+}
+
+/* ================= patch 2: smart features through Supabase ================= */
+const AIX = {
+  ok:false,
+  async init(){
+    if(!API.ready()) return;
+    try{ const r=await fetch(API.url+'/functions/v1/ai',{method:'POST',headers:{apikey:API.key,'Content-Type':'application/json'},body:'{"task":"ping"}'}); const j=r.ok?await r.json():null; this.ok=!!(j&&j.configured); }
+    catch(e){ this.ok=false; }
+    if(this.ok) render();
+  },
+  async call(body){ const tk=await API.token(); return API.call('/functions/v1/ai',{method:'POST',headers:{apikey:API.key,Authorization:'Bearer '+tk,'Content-Type':'application/json'},body:JSON.stringify(body)}); }
+};
 /* ================= extra strings ================= */
 Object.assign(T, {
 sus_short:["سعر غير معتاد","Unusual price","غیر معمولی قیمت","Kakaibang presyo","असामान्य कीमत"],
@@ -1382,10 +1507,10 @@ function marketRef(city,type,exclude){ return memo('mk:'+city+':'+type+':'+(excl
   if(ps.length>=3){ const mid=Math.floor(ps.length/2); return {m: ps.length%2?ps[mid]:(ps[mid-1]+ps[mid])/2, est:false}; }
   return {m: MARKET[city][type], est:true};
 }); }
-function priceTag(l){ const mr=marketRef(l.city,l.type,l.id), r=l.price/mr.m; return {m:mr.m, est:mr.est, r, k: r<0.6?'sus':(r<0.92?'good':(r<=1.1?'fair':'high'))}; }
+function priceTag(l){ const mr=refPrice(l), r=l.price/mr.m; return {m:mr.m, est:mr.est, r, k: r<0.6?'sus':(r<0.92?'good':(r<=1.1?'fair':'high'))}; }
 function priceTagPill(pt){ return pt.k==='sus'?`<span class="pill bad">${ic('alert',13)}${t('sus_short')}</span>`:pt.k==='good'?`<span class="pill good">${t('good_deal')}</span>`:pt.k==='fair'?`<span class="pill palm">${t('fair_price')}</span>`:`<span class="pill warn">${t('pricey')}</span>`; }
 function genderOK(l,u){ return l.gender==='family' || (l.gender==='men' && u.gender!=='f') || (l.gender==='women' && u.gender==='f'); }
-function matchScore(l,u){ const p=u.prefs||{}; return memo('m:'+l.id+':'+u.id+':'+p.city+':'+p.budget+':'+(p.amen||[]).join(','), ()=>{
+function matchScore(l,u){ if(isCo(u)) return matchCompany(l,u); const p=u.prefs||{}; return memo('m:'+l.id+':'+u.id+':'+p.city+':'+p.budget+':'+(p.amen||[]).join(','), ()=>{
   const reasons=[]; let s=0; const b=p.budget||600;
   if(l.price<=b){ s+=35; reasons.push({k:'ok',t:t('in_budget',{b:money(b)})}); }
   else { const over=l.price-b; s+=Math.max(0,35-over/b*100); reasons.push({k:'no',t:t('over_budget',{n:money(over)})}); }
@@ -1401,14 +1526,15 @@ function matchScore(l,u){ const p=u.prefs||{}; return memo('m:'+l.id+':'+u.id+':
   if(l.free===0) s*=0.7;
   return {score:Math.round(Math.min(100,s)), reasons, gOK};
 }); }
-function suggestedPrice(l){ const base=marketRef(l.city,l.type,l.id).m, adj=(l.amen.length-6)*0.015, r10=x=>Math.round(x/10)*10; return {lo:r10(base*(0.94+adj)), hi:r10(base*(1.06+adj))}; }
+function suggestedPrice(l){ const base=refPrice(l).m, adj=(l.amen.length-6)*0.015, r10=x=>Math.round(x/10)*10; return {lo:r10(base*(0.94+adj)), hi:r10(base*(1.06+adj))}; }
 function demand(cities){ return memo('d:'+cities.join(','), ()=>{
   const since = Date.now()-30*DAY;
   const ss = S.searches.filter(x=>x.ts>=since && (!cities.length || cities.includes(x.city))); const N = ss.length||1;
   const cnt = f=>{ const o={}; ss.forEach(x=>[].concat(f(x)).forEach(k=>{ if(k) o[k]=(o[k]||0)+1; })); return Object.entries(o).map(([k,v])=>({k,v,p:Math.round(v/N*100)})).sort((a,b)=>b.v-a.v); };
   const bands=[]; for(let lo=200; lo<800; lo+=100) bands.push({lo,hi:lo+100,v:0});
   ss.filter(x=>x.type==='bed'||x.type==='compound').forEach(x=>{ bands[clamp(Math.floor((x.budget-200)/100),0,bands.length-1)].v++; });
-  return {n:ss.length, nat:cnt(x=>x.nat).filter(x=>NATS.includes(x.k)), type:cnt(x=>x.type).filter(x=>TYPES.includes(x.k)), amen:cnt(x=>x.amen).filter(x=>AMEN.includes(x.k)), bands};
+  const co=ss.filter(x=>x.who==='company'), coW=co.length?Math.round(co.reduce((a,x)=>a+(+x.workers||0),0)/co.length):0;
+  return {coN:co.length, coW, n:ss.length, nat:cnt(x=>x.nat).filter(x=>NATS.includes(x.k)), type:cnt(x=>x.type).filter(x=>TYPES.includes(x.k)), amen:cnt(x=>x.amen).filter(x=>AMEN.includes(x.k)), bands};
 }); }
 function quality(l){
   const tips=[]; let s=0;
@@ -1459,21 +1585,22 @@ function contactRow(uid, k){ const ph=S.contacts[uid]; if(!ph) return ''; const 
 function errBox(){ return `<p class="err" id="form-err" role="alert">${UI.formErr?esc(UI.formErr):''}</p>`; }
 
 function card(l){
-  const u=me(), r=ratingOf('listing',l.id), m=(u&&u.role==='worker')?matchScore(l,u):null, pt=priceTag(l), sv=isSaved(l.id);
+  const u=me(), r=ratingOf('listing',l.id), m=isTenant(u)?matchScore(l,u):null, pt=priceTag(l), sv=isSaved(l.id);
   const photos=l.media.filter(x=>x.kind!=='vid').length, vid=l.media.some(x=>x.kind==='vid');
   const hasNear = l.near && (l.near.ar||l.near.en);
   return `<article class="lcard" data-a="open" data-id="${l.id}" tabindex="0" role="link" aria-label="${esc(pn(l.name))}">
   <div class="lmedia">${thumb(l)}
     <div class="badges">${priceTagPill(pt)}</div>
-    ${u&&u.role==='worker'?`<button type="button" class="heart" data-a="save" data-id="${l.id}" aria-pressed="${sv}" aria-label="${t('nav_saved')}">${heartIcon(sv)}</button>`:''}
+    ${isTenant(u)?`<button type="button" class="heart" data-a="save" data-id="${l.id}" aria-pressed="${sv}" aria-label="${t('nav_saved')}">${heartIcon(sv)}</button>`:''}
     ${(photos||vid)?`<span class="count">${photos?ic('image',12)+' '+photos:''}${vid?' '+ic('video',12):''}</span>`:''}
   </div>
   <div class="lbody">
     <div class="ltop"><div><h3>${esc(pn(l.name))}</h3><p class="small muted">${esc(pn(l.district))} · ${t('c_'+l.city)}</p></div>${m?matchRing(m):''}</div>
     <div class="row wrap small">${rateHTML(r)}${l.licensed?`<span class="pill palm">${ic('badge',13)} ${t('licensed')}</span>`:''}</div>
     <div class="row wrap small muted">${ic(TYPE_IC[l.type],15)} ${t('t_'+l.type)} · ${gLabel(l.gender)}</div>
+    ${(isCo(u)||l.type==='building')?`<div class="row small muted">${ic('users',15)} ${t('fits_n',{n:n(fitsNow(l)||perUnit(l)*l.total)})}${isCo(u)?' · '+t('per_worker',{p:money(costPerWorker(l))}):''}</div>`:''}
     ${hasNear?`<div class="row small muted">${ic('pin',15)} ${t('km_to',{n:l.near.km,p:esc(pn(l.near))})}</div>`:''}
-    <div class="lprice"><b>${n(l.price)}</b><span class="small">${t('sar')} ${t('per_month')}</span><span class="small muted">· ${l.free?t('free_units',{n:l.free}):t('full_now')}</span></div>
+    <div class="lprice"><b>${n(l.price)}</b><span class="small">${t('sar')} ${t('per_month')}</span>${l.type==='building'?`<span class="small muted">${t('per_building')}</span>`:''}<span class="small muted">· ${l.free?t('free_units',{n:l.free}):t('full_now')}</span></div>
     <div class="lamen">${l.amen.slice(0,6).map(a=>`<span title="${t('a_'+a)}">${ic(AMEN_IC[a],16)}</span>`).join('')}${l.amen.length>6?`<span class="xs">+${l.amen.length-6}</span>`:''}</div>
   </div></article>`;
 }
@@ -1481,11 +1608,11 @@ function topbar(inner){ return `<header class="topbar"><div class="wrap gutter t
 function brandBar(){ return topbar(`<span class="mark">${logoMark(28)} AVAZ</span><span class="proto">${t('trial')}</span><span class="grow"></span><button type="button" class="iconbtn" data-a="refreshNow" aria-label="${t('refresh')}">${ic('refresh',19)}</button><button type="button" class="iconbtn" data-a="sheet" data-s="lang" aria-label="${t('language')}">${ic('globe',20)}</button>`); }
 function reviewHTML(rv){
   const f=U(rv.from); if(!f) return '';
-  const isW=f.role==='worker';
+  const isW=f.role==='worker', trk='rv:'+rv.id+':'+LANG, trv=UI.trCache[trk];
   return `<div class="review"><div class="row" style="align-items:flex-start"><div class="avatar">${avatarSVG(avatarOf(f))}</div>
-    <div class="grow"><b>${esc(pn(f.name))}</b> ${isW&&f.nat?flag(f.nat):''}<div class="xs muted">${isW?(f.job?t('p_'+f.job):''):t('p_host')} · ${fmtDate(rv.date)} · ${t('verified_stay')}</div></div>
+    <div class="grow"><b>${esc(pn(f.name))}</b> ${isW&&f.nat?flag(f.nat):''}<div class="xs muted">${isW?(f.job?t('p_'+f.job):''):(isCo(f)?t('p_company'):t('p_host'))} · ${fmtDate(rv.date)} · ${t('verified_stay')}</div></div>
     <div class="row" style="gap:6px">${stars(rv.overall,12)}<b class="num small">${rv.overall.toFixed(1)}</b></div></div>
-    <p dir="auto">${esc(rv.text.s)}${LANG_NAMES[rv.text.l]?` <span class="ltag">${LANG_NAMES[rv.text.l]}</span>`:''}</p></div>`;
+    <p dir="auto">${esc(trv||rv.text.s)}${!trv&&LANG_NAMES[rv.text.l]?` <span class="ltag">${LANG_NAMES[rv.text.l]}</span>`:''}</p>${AIX.ok&&!trv&&rv.text.l&&rv.text.l!==LANG?`<button type="button" class="linkbtn" style="align-self:flex-start;padding:0" data-a="trReview" data-id="${rv.id}">${UI.tr===rv.id?t('translating'):t('translate')}</button>`:''}</div>`;
 }
 
 /* ================= filtering ================= */
@@ -1493,6 +1620,7 @@ function filtered(f,type,q){
   f=f||UI.f; type=type||UI.type; q=norm(q==null?UI.q:q).trim();
   return S.listings.filter(l=>{
     if(!live(l) || isPaused(l)) return false;
+    if(l.type==='building' && !isCo(me()) && type!=='building') return false;
     if(type!=='all' && l.type!==type) return false;
     if(f.city && l.city!==f.city) return false;
     if(f.max && l.price>f.max) return false;
@@ -1507,12 +1635,12 @@ function filtered(f,type,q){
 function sortList(list){ const u=me(), a=list.slice();
   if(UI.sort==='price') a.sort((x,y)=>x.price-y.price);
   else if(UI.sort==='rating') a.sort((x,y)=>ratingOf('listing',y.id).bayes-ratingOf('listing',x.id).bayes);
-  else if(u&&u.role==='worker') a.sort((x,y)=>matchScore(y,u).score-matchScore(x,u).score);
+  else if(isTenant(u)) a.sort((x,y)=>matchScore(y,u).score-matchScore(x,u).score);
   return a; }
 function filterCount(f){ f=f||UI.f; return (f.city?1:0)+(f.max?1:0)+(f.gender!=='any'?1:0)+f.amen.length+(f.licensed?1:0)+(f.rating4?1:0); }
 let LAST_SEARCH = {k:'',ts:0};
-function logSearch(){ const u=me(); if(!u||u.role!=='worker') return; const f=UI.f, p=u.prefs||{};
-  const row={city:f.city||p.city||'riyadh',type:UI.type!=='all'?UI.type:'bed',budget:f.max||p.budget||500,nat:u.nat,amen:(f.amen.length?f.amen:(p.amen||[])).slice()};
+function logSearch(){ const u=me(); if(!isTenant(u)) return; const f=UI.f, p=u.prefs||{};
+  const row={city:f.city||p.city||'riyadh',type:UI.type!=='all'?UI.type:(isCo(u)?'compound':'bed'),budget:f.max||p.budget||500,nat:u.nat||null,amen:(f.amen.length?f.amen:(p.amen||[])).slice(),who:u.role,workers:isCo(u)?(+u.workforce||null):null};
   const k=JSON.stringify(row); if(k===LAST_SEARCH.k && Date.now()-LAST_SEARCH.ts<60000) return; LAST_SEARCH={k,ts:Date.now()};
   API.rest('POST','searches',row,'return=minimal').catch(()=>{}); }
 
@@ -1532,6 +1660,7 @@ function viewWelcome(){
     <div class="roles">
       <button type="button" class="role" data-a="role" data-v="worker"><span class="ic" style="background:var(--palm-tint);color:var(--palm)">${ic('bed',28)}</span><span><b>${t('i_need')}</b><span class="small muted">${t('i_need_sub')}</span></span></button>
       <button type="button" class="role" data-a="role" data-v="host"><span class="ic" style="background:var(--warn-tint);color:var(--warn)">${ic('building',28)}</span><span><b>${t('i_have')}</b><span class="small muted">${t('i_have_sub')}</span></span></button>
+      <button type="button" class="role" data-a="role" data-v="company"><span class="ic" style="background:var(--palm-tint);color:var(--ink)">${ic('tower',28)}</span><span><b>${t('i_company')}</b><span class="small muted">${t('i_company_sub')}</span></span></button>
     </div>
     <div><button type="button" class="btn" data-a="showLogin">${ic('user',18)} ${t('have_account')}</button></div>
     <div class="feat">
@@ -1555,10 +1684,10 @@ function viewLogin(){
     <button type="button" class="linkbtn" data-a="welcome">${t('no_account')}</button>
   </form></div></div>`;
 }
-function regDefaults(role){ return {role,name:'',phone:'',email:'',password:'',complete:false,gender:'m',nat:'pk',job:'driver',av:'imran',city:'riyadh',budget:600,amen:['ac','wifi'],hav:'logo'}; }
+function regDefaults(role){ const co=role==='company'; return {role,name:'',phone:'',email:'',password:'',complete:false,gender:'m',nat:'pk',job:'driver',av:'imran',city:'riyadh',budget:co?450:600,amen:co?['ac','transport','meals']:['ac','wifi'],hav:'logo',cr:'',workforce:50}; }
 function suggestAv(){ const r=UI.reg; const ks=Object.keys(CHARS); const pickK = ks.find(k=>CHARS[k].nat===r.nat && CHARS[k].job===r.job) || ks.find(k=>CHARS[k].nat===r.nat && (CHARS[k].gender||'m')===r.gender) || ks.find(k=>(CHARS[k].gender||'m')===r.gender && CHARS[k].job===r.job); if(pickK) r.av=pickK; }
 function viewRegister(){
-  const r=UI.reg, isW=r.role==='worker';
+  const r=UI.reg, isW=r.role==='worker', isCoR=r.role==='company';
   const workerF = `
     <div class="field"><span>${t('gender')}</span><div class="chips">${chip('regPick','gender','m',r.gender==='m',t('male'))}${chip('regPick','gender','f',r.gender==='f',t('female'))}</div></div>
     <div class="fgrid"><label class="field"><span>${t('nationality')}</span><select class="input" id="reg-nat" data-ch="reg" name="nat">${NATS.map(k=>`<option value="${k}" ${r.nat===k?'selected':''}>${t('n_'+k)}</option>`).join('')}</select></label>
@@ -1571,16 +1700,23 @@ function viewRegister(){
   const hostF = `
     <div class="field"><span>${t('city')}</span><div class="chips">${CITIES.map(c=>chip('regPick','city',c,r.city===c,t('c_'+c))).join('')}</div></div>
     <div class="field"><span>${t('pick_avatar')}</span><div class="avpick">${hostAv.map(([k,a])=>`<button type="button" data-a="regPick" data-k="hav" data-v="${k}" aria-pressed="${r.hav===k}">${avatarSVG(a)}</button>`).join('')}</div></div>`;
+  const companyF = `
+    <div class="fgrid"><label class="field"><span>${t('cr_no')}</span><input class="input num" id="reg-cr" data-in="reg" name="cr" inputmode="numeric" dir="ltr" maxlength="10" placeholder="10XXXXXXXX" value="${esc(r.cr)}"></label>
+    <label class="field"><span>${t('workforce')}</span><input class="input num" id="reg-workforce" data-in="reg" name="workforce" type="number" inputmode="numeric" min="1" value="${esc(r.workforce)}"></label></div>
+    <div class="field"><span>${t('workforce_g')}</span><div class="chips">${chip('regPick','gender','m',r.gender==='m',t('g_men'))}${chip('regPick','gender','f',r.gender==='f',t('g_women'))}</div></div>
+    <div class="field"><span>${t('work_city')}</span><div class="chips">${CITIES.map(c=>chip('regPick','city',c,r.city===c,t('c_'+c))).join('')}</div></div>
+    <label class="field"><span class="row between"><span>${t('budget_worker')}</span><b class="num" id="reg-b">${money(r.budget)}</b></span><input type="range" id="reg-budget" min="150" max="3000" step="50" value="${r.budget}" data-in="regBudget"></label>
+    <div class="field"><span>${t('want_amen')}</span><div class="chips">${AMEN.map(a=>chip('regToggle','amen',a,r.amen.includes(a),ic(AMEN_IC[a],16)+t('a_'+a))).join('')}</div></div>`;
   const authF = r.complete ? `<p class="small muted">${t('signed_as',{e:esc(API.session&&API.session.user.email||'')})}</p>` : `
     <div class="fgrid"><label class="field"><span>${t('email')}</span><input class="input" id="reg-email" data-in="reg" name="email" type="email" inputmode="email" autocomplete="email" dir="ltr" value="${esc(r.email)}"></label>
     <label class="field"><span>${t('password')}</span><input class="input" id="reg-password" data-in="reg" name="password" type="password" autocomplete="new-password" dir="ltr" value="${esc(r.password)}"></label></div>`;
   return `<div class="welcome">${topbar(`<button type="button" class="iconbtn flat" data-a="${r.complete?'logout':'welcome'}" aria-label="${t('back')}">${ic('back',22,'flip')}</button><h1 class="grow" style="font-size:var(--t-l)">${r.complete?t('complete_profile'):t('register')}</h1><button type="button" class="iconbtn" data-a="sheet" data-s="lang" aria-label="${t('language')}">${ic('globe',20)}</button>`)}
   <div class="wrap gutter" style="max-width:780px"><form class="form" data-submit="regSubmit" novalidate>
-    <div class="stack" style="gap:6px"><div class="chips">${chip('regPick','role','worker',isW,ic('bed',16)+t('reg_worker'))}${chip('regPick','role','host',!isW,ic('building',16)+t('reg_host'))}</div><p class="hint">${t('role_one')}</p></div>
-    <div class="fgrid"><label class="field"><span>${isW?t('full_name'):t('company_name')}</span><input class="input" id="reg-name" data-in="reg" name="name" value="${esc(r.name)}" autocomplete="name"></label>
+    <div class="stack" style="gap:6px"><div class="chips">${chip('regPick','role','worker',isW,ic('bed',16)+t('reg_worker'))}${chip('regPick','role','host',r.role==='host',ic('building',16)+t('reg_host'))}${chip('regPick','role','company',isCoR,ic('tower',16)+t('reg_company'))}</div><p class="hint">${t('role_one')}</p></div>
+    <div class="fgrid"><label class="field"><span>${isW?t('full_name'):(isCoR?t('org_name'):t('company_name'))}</span><input class="input" id="reg-name" data-in="reg" name="name" value="${esc(r.name)}" autocomplete="name"></label>
     <label class="field"><span>${t('phone')}</span><input class="input" id="reg-phone" data-in="reg" name="phone" type="tel" inputmode="tel" dir="ltr" placeholder="05XXXXXXXX" value="${esc(r.phone)}"></label></div>
     ${authF}
-    ${isW?workerF:hostF}
+    ${isW?workerF:(isCoR?companyF:hostF)}
     ${errBox()}
     <button type="submit" class="btn primary block">${t('continue')}</button>
     ${r.complete?'':`<button type="button" class="linkbtn" data-a="showLogin">${t('have_account')}</button>`}
@@ -1594,7 +1730,7 @@ function viewExplore(){
   const showBest = !af && UI.type==='all' && avail>4;
   const best = showBest ? S.listings.filter(l=>live(l)&&!isPaused(l)&&l.free>0).map(l=>({l,m:matchScore(l,u)})).filter(x=>x.m.gOK).sort((a,b)=>b.m.score-a.m.score).slice(0,4) : [];
   return brandBar() + `
-  <section class="band"><div class="wrap gutter band-in"><div class="band-copy"><p>${t('hello',{n:esc(pn(u.name))})}</p><h1>${t('explore_title')}</h1><p>${t('explore_sub',{n:avail,c:cities})}</p></div><div class="art">${bandArt()}</div></div><div class="tape"></div></section>
+  <section class="band"><div class="wrap gutter band-in"><div class="band-copy"><p>${t('hello',{n:esc(pn(u.name))})}</p><h1>${isCo(u)?t('explore_title_co'):t('explore_title')}</h1><p>${isCo(u)?t('i_company_sub'):t('explore_sub',{n:avail,c:cities})}</p></div><div class="art">${bandArt()}</div></div><div class="tape"></div></section>
   <div class="wrap gutter">
     <div class="sec" style="padding-bottom:4px">
       <div class="row"><label class="search grow">${ic('search',20)}<span class="sr">${t('search_ph')}</span><input class="input" id="q" type="search" data-in="q" value="${esc(UI.q)}" placeholder="${t('search_ph')}" autocomplete="off"></label>
@@ -1625,7 +1761,7 @@ function bookingCard(b){
   const l=L(b.listing); if(!l) return '';
   const h=U(b.host); let acts='', contact='';
   if(b.status==='pending') acts=`<button type="button" class="btn sm" data-a="cancelB" data-id="${b.id}">${t('cancel_req')}</button>`;
-  if(b.status==='confirmed'){ contact=contactRow(b.host,'contact_host'); acts=`<button type="button" class="btn sm" data-a="endStay" data-id="${b.id}">${ic('calendar',16)} ${t('end_stay')}</button>`; }
+  if(b.status==='confirmed'){ contact=contactRow(b.host,'contact_host'); acts=`<button type="button" class="btn sm" data-a="endAsk" data-id="${b.id}">${ic('calendar',16)} ${t('end_stay')}</button>`; }
   if(b.status==='completed'){ contact=contactRow(b.host,'contact_host'); acts=rateAct(b,'w2h',t('rate_now')); }
   return `<article class="bk"><div class="th" data-a="open" data-id="${l.id}" role="link" tabindex="0" aria-label="${esc(pn(l.name))}">${thumb(l)}</div>
     <div class="stack" style="gap:5px;min-width:0"><div class="row between wrap"><b>${esc(pn(l.name))}</b>${statusPill(b)}</div>
@@ -1651,12 +1787,12 @@ function gauge(l,pt){
 }
 function viewDetail(id){
   const l=L(id); if(!l){ UI.page=null; return viewApp(); }
-  const u=me(), isW=u.role==='worker', own=l.host===u.id, r=ratingOf('listing',l.id), pt=priceTag(l), m=isW?matchScore(l,u):null;
+  const u=me(), isW=isTenant(u), own=l.host===u.id, r=ratingOf('listing',l.id), pt=priceTag(l), m=isW?matchScore(l,u):null;
   const host=U(l.host)||{id:l.host,name:'—',joined:l.created}, hr=ratingOf('host',host.id), ht=trustHost(host), occ=l.total-l.free, sv=isSaved(l.id), resp=hostResp(host.id);
   const media=l.media.length?l.media.map(x=>mediaHTML(x,{full:true})).join(''):illus(l);
   const c=t('c_'+l.city);
   const pline = pt.r<0.97?t('below_market',{c,p:Math.round((1-pt.r)*100)}):(pt.r>1.03?t('above_market',{c,p:Math.round((pt.r-1)*100)}):t('at_market',{c}));
-  const perL = l.type==='bed'||l.type==='compound'?t('per_bed'):t('per_unit');
+  const perL = l.type==='building'?t('per_building'):(l.type==='bed'||l.type==='compound'?t('per_bed'):t('per_unit'));
   let bookBtn='';
   if(own) bookBtn=`<button type="button" class="btn" data-a="edEdit" data-id="${l.id}">${t('edit')}</button>`;
   else if(!isW) bookBtn=`<span class="small muted">${t('not_open_host')}</span>`;
@@ -1689,11 +1825,12 @@ function viewDetail(id){
       </section>
       ${descTxt?`<section class="stack" style="gap:10px"><div class="sec-h"><h2>${t('about')}</h2>${descLang&&!trText?`<span class="ltag">${LANG_NAMES[descLang]}</span>`:''}</div>
         <p dir="auto" id="desc" style="max-width:68ch;white-space:pre-line">${esc(descTxt)}</p>
-        ${SAMPLE&&!AI_OFF&&descLang&&descLang!==LANG&&!trText&&UI.tr!==l.id?`<button type="button" class="btn sm ghost" data-a="translate" data-id="${l.id}" style="align-self:flex-start">${ic('spark',16)} ${t('translate')}</button>`:''}
+        ${AIX.ok&&descLang&&descLang!==LANG&&!trText&&UI.tr!==l.id?`<button type="button" class="btn sm ghost" data-a="translate" data-id="${l.id}" style="align-self:flex-start">${ic('spark',16)} ${t('translate')}</button>`:''}
       </section>`:''}
       <section class="stack" style="gap:10px"><div class="sec-h"><h2>${t('availability')}</h2><span class="small muted num">${t('occupancy_n',{a:occ,b:l.total})}</span></div>
         ${l.total<=64?`<div class="beds" aria-hidden="true">${Array.from({length:l.total},(_,i)=>`<i class="${i<occ?'':'f'}"></i>`).join('')}</div>`:`<div class="bar" style="height:12px"><i style="width:${occ/l.total*100}%;background:var(--muted)"></i></div>`}
         <div class="legend"><span><i style="background:var(--line)"></i>${t('occupied')}</span><span><i style="background:var(--palm)"></i>${t('available')} (${l.free})</span></div>
+        ${capLine(l)}
       </section>
       ${l.amen.length?`<section class="stack" style="gap:10px"><div class="sec-h"><h2>${t('amenities')}</h2></div><div class="agrid">${l.amen.map(a=>`<div class="aitem">${ic(AMEN_IC[a],20)}<span>${t('a_'+a)}</span></div>`).join('')}</div>
         ${l.langs.length?`<p class="small muted">${t('community_langs')}: <b style="color:var(--ink)">${l.langs.map(k=>LANG_NAMES[k]).join(' · ')}</b></p>`:''}</section>`:''}
@@ -1742,7 +1879,7 @@ function viewDash(){
     </div>
     ${pend?`<button type="button" class="panel row" data-a="tab" data-t="requests" style="width:100%;text-align:start;border-color:var(--vis);font:inherit;color:inherit"><span class="iconbtn" style="background:var(--vis);color:var(--on-vis);border:0">${ic('inbox',20)}</span><b class="grow">${t('new_requests_n',{n:pend})}</b><span class="btn sm primary">${t('review_now')}</span></button>`:''}
    </section>
-   <section class="sec"><div class="sec-h"><div><h2>${t('demand_title')}</h2><p class="small muted">${t('demand_sub',{n:d.n})}</p></div><span class="ai-h small" style="color:var(--palm)">${ic('spark',16)} ${t('smart')}</span></div>
+   <section class="sec"><div class="sec-h"><div><h2>${t('demand_title')}</h2><p class="small muted">${t('demand_sub',{n:d.n})}</p>${d.coN?`<p class="small muted">${t('co_demand',{n:d.coN,w:n(d.coW)})}</p>`:''}</div><span class="ai-h small" style="color:var(--palm)">${ic('spark',16)} ${t('smart')}</span></div>
     ${demandHTML}
    </section>
    <section class="sec"><div class="sec-h"><h2>${t('quality')}</h2>${ls.length?'':`<button type="button" class="btn primary sm" data-a="edNew">${ic('plus',16)} ${t('add_listing')}</button>`}</div>
@@ -1753,7 +1890,7 @@ function viewDash(){
 function unitCard(l){
   const q=quality(l), r=ratingOf('listing',l.id), occ=l.total-l.free;
   return `<article class="unit"><div class="th" data-a="open" data-id="${l.id}" role="link" tabindex="0" aria-label="${esc(pn(l.name))}">${thumb(l)}</div>
-  <div class="stack" style="gap:6px;min-width:0"><div class="ltop"><div><b>${esc(pn(l.name))}</b><p class="small muted">${esc(pn(l.district))} · ${t('c_'+l.city)} · ${t('ts_'+l.type)}</p></div>${ring(q.score)}</div>
+  <div class="stack" style="gap:6px;min-width:0"><div class="ltop"><div><b>${esc(pn(l.name))}</b><p class="small muted">${esc(pn(l.district))} · ${t('c_'+l.city)} · ${t('ts_'+l.type)}${l.type==='building'?' · '+t('fits_n',{n:n(perUnit(l))}):''}</p></div>${ring(q.score)}</div>
    <div class="row wrap small">${rateHTML(r)}<span class="muted row" style="gap:4px">${ic('eye',14)} ${n(l.views)} ${t('views')}</span></div>
    <div class="small"><b class="num">${money(l.price)}</b> <span class="muted">${t('per_month')}</span></div>
    <div class="stack" style="gap:4px"><div class="bar"><i style="width:${occ/l.total*100}%"></i></div><span class="xs muted">${t('occupancy_n',{a:occ,b:l.total})}</span></div></div>
@@ -1767,23 +1904,27 @@ function viewUnits(){
 }
 function reqCard(b){
   const w=U(b.worker), l=L(b.listing); if(!w||!l) return '';
+  const co=isCo(w), pu=perUnit(l);
   const r=ratingOf('worker',w.id), tr=trustWorker(w), stays=completedStays(w.id), pay=payRate(w.id), pts=[];
   pts.push(stays?{k:'ok',t:t('prev_stays',{n:stays})}:{k:'no',t:t('no_history')});
   if(pay!=null) pts.push({k:pay>=90?'ok':'no',t:t('pays_on_time',{p:pay})});
-  const bud=w.prefs&&w.prefs.budget; if(bud) pts.push(l.price<=bud?{k:'ok',t:t('budget_fit')}:{k:'no',t:t('budget_over')});
-  if(w.lang && l.langs.includes(w.lang)) pts.push({k:'ok',t:t('lang_fit',{l:LANG_NAMES[w.lang]})});
+  const bud=w.prefs&&w.prefs.budget, cost=co?costPerWorker(l):l.price;
+  if(bud) pts.push(cost<=bud?{k:'ok',t:t('budget_fit')}:{k:'no',t:t('budget_over')});
+  if(co) pts.push(w.cr?{k:'ok',t:t('cr_l',{n:esc(w.cr)})}:{k:'no',t:t('cr_no')});
+  if(!co && w.lang && l.langs.includes(w.lang)) pts.push({k:'ok',t:t('lang_fit',{l:LANG_NAMES[w.lang]})});
   const good = stays>=2 && r.n && r.bayes>=4;
-  return `<article class="req"><div class="row" style="align-items:flex-start"><div class="avatar lg">${avatarSVG(avatarOf(w))}</div><div class="stack grow" style="gap:3px"><b>${esc(pn(w.name))}</b><span class="row wrap small" style="gap:6px">${w.nat?flag(w.nat)+' '+t('n_'+w.nat):''}${w.job?' · '+t('p_'+w.job):''}</span><span class="row small">${rateHTML(r)}</span></div><div class="stack" style="align-items:center;gap:2px">${ring(tr)}<span class="xs muted">${t('trust')}</span></div></div>
-   <div class="small"><b>${t('tenant_of',{n:esc(pn(l.name))})}</b><br><span class="muted">${t('from_d',{d:fmtDate(b.moveIn)})} · ${monthsTxt(b.months)} · ${t('units_sel',{n:b.units})}</span><br><b class="num">${money(l.price*b.units)}</b> <span class="muted">${t('per_month')}</span></div>
+  const who = co ? coLabel(w) : (w.nat?flag(w.nat)+' '+t('n_'+w.nat):'')+(w.job?' · '+t('p_'+w.job):'');
+  return `<article class="req"><div class="row" style="align-items:flex-start"><div class="avatar lg">${avatarSVG(avatarOf(w))}</div><div class="stack grow" style="gap:3px"><b>${esc(pn(w.name))}</b><span class="row wrap small" style="gap:6px">${who}</span><span class="row small">${rateHTML(r)}</span></div><div class="stack" style="align-items:center;gap:2px">${ring(tr)}<span class="xs muted">${t('trust')}</span></div></div>
+   <div class="small"><b>${t('tenant_of',{n:esc(pn(l.name))})}</b><br><span class="muted">${t('from_d',{d:fmtDate(b.moveIn)})} · ${monthsTxt(b.months)} · ${l.type==='building'?t('t_building'):t('units_sel',{n:n(b.units)})}${co?' · '+t('fits_n',{n:n(b.units*pu)}):''}</span><br><b class="num">${money(l.price*b.units)}</b> <span class="muted">${t('per_month')}</span></div>
    <div class="ai"><div class="ai-h">${ic('spark',16)} ${t('req_ai')}</div><ul class="reasons">${pts.map(reasonLi).join('')}</ul><b style="color:${good?'var(--good)':'var(--warn)'}">${good?t('recommend_accept'):t('recommend_check')}</b></div>
    <div class="row"><button type="button" class="btn primary grow" data-a="accept" data-id="${b.id}">${ic('check',18)} ${t('accept')}</button><button type="button" class="btn" data-a="decline" data-id="${b.id}">${t('decline')}</button></div></article>`;
 }
 function tenantRow(b){
   const w=U(b.worker), l=L(b.listing); if(!w||!l) return '';
   let act='';
-  if(b.status==='confirmed') act=`<button type="button" class="btn sm" data-a="endStay" data-id="${b.id}">${t('end_stay')}</button>`;
+  if(b.status==='confirmed') act=`<button type="button" class="btn sm" data-a="endAsk" data-id="${b.id}">${t('end_stay')}</button>`;
   else if(b.status==='completed') act=rateAct(b,'h2w',t('rate_tenant'));
-  return `<div class="panel stack" style="gap:10px"><div class="row wrap" style="gap:12px"><div class="avatar">${avatarSVG(avatarOf(w))}</div><div class="stack grow" style="gap:2px;min-width:160px"><b class="row" style="gap:6px">${esc(pn(w.name))} ${w.nat?flag(w.nat):''}</b><span class="small muted">${esc(pn(l.name))} · ${b.status==='completed'&&b.endedAt?fmtDate(b.endedAt):t('from_d',{d:fmtDate(b.moveIn)})}</span></div>${statusPill(b)}${act}</div>${contactRow(w.id,'contact_tenant')}</div>`;
+  return `<div class="panel stack" style="gap:10px"><div class="row wrap" style="gap:12px"><div class="avatar">${avatarSVG(avatarOf(w))}</div><div class="stack grow" style="gap:2px;min-width:160px"><b class="row" style="gap:6px">${esc(pn(w.name))} ${w.nat?flag(w.nat):''}${isCo(w)?`<span class="pill palm">${t('p_company')}</span>`:''}</b><span class="small muted">${esc(pn(l.name))} · ${b.status==='completed'&&b.endedAt?fmtDate(b.endedAt):t('from_d',{d:fmtDate(b.moveIn)})}</span></div>${statusPill(b)}${act}</div>${contactRow(w.id,'contact_tenant')}</div>`;
 }
 function viewRequests(){
   const bs=S.bookings.filter(b=>b.host===S.userId);
@@ -1799,10 +1940,10 @@ function viewRequests(){
 /* ================= views: editor ================= */
 function draftFrom(l){
   const u=me();
-  if(!l) return {name_ar:'',name_en:'',type:'bed',city:u.city||'riyadh',district:'',near:'',km:'',gender:'men',price:'',total:'',free:'',amen:['ac'],rules:['nosmoke','quiet'],langs:[],licensed:false,desc_ar:'',desc_en:'',media:[],_new:[],_removed:[],uploading:0};
-  return {name_ar:l.name.ar||'',name_en:l.name.en||'',type:l.type,city:l.city,district:l.district||'',near:l.near.ar||l.near.en||'',km:l.near.km||'',gender:l.gender,price:l.price,total:l.total,free:l.free,amen:l.amen.slice(),rules:l.rules.slice(),langs:l.langs.slice(),licensed:l.licensed,desc_ar:l.desc.ar||'',desc_en:l.desc.en||'',media:l.media.map(m=>Object.assign({},m)),_new:[],_removed:[],uploading:0};
+  if(!l) return {name_ar:'',name_en:'',type:'bed',city:u.city||'riyadh',district:'',near:'',km:'',gender:'men',price:'',total:'',free:'',capacity:'',apartments:'',amen:['ac'],rules:['nosmoke','quiet'],langs:[],licensed:false,desc_ar:'',desc_en:'',media:[],_new:[],_removed:[],uploading:0};
+  return {name_ar:l.name.ar||'',name_en:l.name.en||'',type:l.type,city:l.city,district:l.district||'',near:l.near.ar||l.near.en||'',km:l.near.km||'',gender:l.gender,price:l.price,total:l.total,free:l.free,capacity:l.capacity||'',apartments:l.apartments||'',amen:l.amen.slice(),rules:l.rules.slice(),langs:l.langs.slice(),licensed:l.licensed,desc_ar:l.desc.ar||'',desc_en:l.desc.en||'',media:l.media.map(m=>Object.assign({},m)),_new:[],_removed:[],uploading:0};
 }
-function draftListing(d){ return {city:d.city,type:d.type,price:+d.price||0,amen:d.amen,licensed:d.licensed,langs:d.langs,rules:d.rules,media:d.media,desc:{ar:d.desc_ar,en:d.desc_en}}; }
+function draftListing(d){ return {city:d.city,type:d.type,price:+d.price||0,capacity:+d.capacity||null,amen:d.amen,licensed:d.licensed,langs:d.langs,rules:d.rules,media:d.media,desc:{ar:d.desc_ar,en:d.desc_en}}; }
 function qualityBox(){
   const d=UI.page.d, dl=draftListing(d), q=quality(dl), sp=suggestedPrice(dl);
   return `<div class="row" style="gap:14px">${ring(q.score,qLabel(q.score),true)}<div class="stack" style="gap:2px"><b>${t('live_quality')}</b><span class="small muted">${t('suggested_price')}: <b class="num" style="color:var(--ink)">${n(sp.lo)}–${n(sp.hi)} ${t('sar')}</b></span></div></div>${q.tips.length?`<b class="small">${t('tips')}</b><ul class="tips">${q.tips.map(x=>`<li>${x}</li>`).join('')}</ul>`:`<p class="small" style="color:var(--good)">${t('all_good')}</p>`}`;
@@ -1821,14 +1962,12 @@ function viewEditor(){
     <div class="fgrid"><label class="field"><span>${t('district')}</span><input class="input" id="ed-district" list="dl-d" data-in="ed" name="district" dir="auto" value="${esc(d.district)}" maxlength="80"><datalist id="dl-d">${DISTRICTS[d.city].map(x=>`<option value="${esc(x.ar)}">${esc(x.en)}</option>`).join('')}</datalist></label>
      <div class="field"><span>${t('near_work')}</span><div class="row"><input class="input" id="ed-near" data-in="ed" name="near" dir="auto" value="${esc(d.near)}" aria-label="${t('near_work')}" maxlength="80"><input class="input num" id="ed-km" data-in="ed" name="km" type="number" inputmode="decimal" min="0" step="0.1" value="${esc(d.km)}" style="width:96px" aria-label="km"></div></div></div>
     <div class="field"><span>${t('for_whom')}</span>${sel('edPick','gender',['men','women','family'],d.gender,v=>t('g_'+v))}</div>
-    <div class="fgrid"><label class="field"><span>${t('price_month')}</span><input class="input num" id="ed-price" data-in="ed" name="price" type="number" inputmode="numeric" min="1" value="${esc(d.price)}"></label>
-     <label class="field"><span>${t('total_units')}</span><input class="input num" id="ed-total" data-in="ed" name="total" type="number" inputmode="numeric" min="1" value="${esc(d.total)}"></label>
-     <label class="field"><span>${t('free_now')}</span><input class="input num" id="ed-free" data-in="ed" name="free" type="number" inputmode="numeric" min="0" value="${esc(d.free)}"></label></div>
+    ${edUnitsHTML(d)}
     <div class="field"><span>${t('amenities')}</span><div class="chips">${AMEN.map(a=>chip('edToggle','amen',a,d.amen.includes(a),ic(AMEN_IC[a],16)+t('a_'+a))).join('')}</div></div>
     <div class="field"><span>${t('house_rules')}</span><div class="chips">${RULES.map(k=>chip('edToggle','rules',k,d.rules.includes(k),t('r_'+k))).join('')}</div></div>
     <div class="field"><span>${t('community_langs')}</span><div class="chips">${COMM_LANGS.map(k=>chip('edToggle','langs',k,d.langs.includes(k),LANG_NAMES[k])).join('')}</div></div>
     <label class="toggle"><span class="row">${ic('badge',20)} ${t('licensed_q')}</span><span class="switch"><input type="checkbox" id="ed-lic" data-ch="edLic" ${d.licensed?'checked':''} aria-label="${t('licensed_q')}"><i></i></span></label>
-    <div class="field"><div class="row between wrap"><span class="label">${t('description')}</span>${SAMPLE&&!AI_OFF?`<button type="button" class="btn sm ghost" data-a="aiWrite" ${pg.aiBusy?'disabled':''}>${ic('spark',16)} ${pg.aiBusy?t('ai_writing'):t('ai_write')}</button>`:''}</div>
+    <div class="field"><div class="row between wrap"><span class="label">${t('description')}</span>${AIX.ok?`<button type="button" class="btn sm ghost" data-a="aiWrite" ${pg.aiBusy?'disabled':''}>${ic('spark',16)} ${pg.aiBusy?t('ai_writing'):t('ai_write')}</button>`:''}</div>
      <label class="field"><span class="hint">${t('desc_ar_label')}</span><textarea class="input" id="ed-desc_ar" data-in="ed" name="desc_ar" dir="rtl" placeholder="${t('desc_ph')}" maxlength="2000">${esc(d.desc_ar)}</textarea></label>
      <label class="field"><span class="hint">${t('desc_en_label')}</span><textarea class="input" id="ed-desc_en" data-in="ed" name="desc_en" dir="ltr" maxlength="2000">${esc(d.desc_en)}</textarea></label></div>
     <div class="field"><span>${t('media')}</span><p class="hint">${t('media_hint')}</p>
@@ -1845,25 +1984,26 @@ function prefsPanel(u){
   const p=UI.prefs;
   return `<section class="panel stack"><b>${t('prefs')}</b>
    <div class="field"><span>${t('work_city')}</span><div class="chips">${CITIES.map(c=>chip('pref','city',c,p.city===c,t('c_'+c))).join('')}</div></div>
-   <label class="field"><span class="row between"><span>${t('budget')}</span><b class="num" id="pref-b">${money(p.budget)}</b></span><input type="range" id="pref-budget" min="150" max="3000" step="50" value="${p.budget}" data-in="prefBudget"></label>
+   <label class="field"><span class="row between"><span>${isCo(u)?t('budget_worker'):t('budget')}</span><b class="num" id="pref-b">${money(p.budget)}</b></span><input type="range" id="pref-budget" min="150" max="3000" step="50" value="${p.budget}" data-in="prefBudget"></label>
+   ${isCo(u)?`<label class="field"><span>${t('workforce')}</span><input class="input num" id="pref-wf" data-in="prefWf" type="number" inputmode="numeric" min="1" value="${esc(p._wf!=null?p._wf:(u.workforce||''))}"></label>`:''}
    <div class="field"><span>${t('want_amen')}</span><div class="chips">${AMEN.map(a=>chip('pref','amen',a,(p.amen||[]).includes(a),ic(AMEN_IC[a],16)+t('a_'+a))).join('')}</div></div>
    <button type="button" class="btn primary" data-a="savePrefs" style="align-self:flex-start">${t('save_prefs')}</button></section>`;
 }
 function viewProfile(){
-  const u=me(), isW=u.role==='worker', r=ratingOf(isW?'worker':'host',u.id), tr=isW?trustWorker(u):trustHost(u);
+  const u=me(), isW=u.role==='worker', tn=isTenant(u), r=ratingOf(tn?'worker':'host',u.id), tr=tn?trustWorker(u):trustHost(u);
   return brandBar()+`<div class="wrap gutter stack" style="max-width:820px;gap:16px;padding-bottom:20px">
    <section class="sec" style="padding-bottom:0"><div class="profile-h"><div class="avatar xl">${avatarSVG(avatarOf(u))}</div><div class="stack" style="gap:4px;min-width:0">
      <h2 style="font-size:var(--t-xl)">${esc(pn(u.name))}</h2>
-     <p class="row wrap small" style="gap:6px">${isW?(u.nat?flag(u.nat)+' '+t('n_'+u.nat):'')+(u.job?' · '+t('p_'+u.job):''):t('p_host')}${u.verified?` <span class="pill good">${ic('badge',13)} ${t('verified')}</span>`:''}</p>
+     <p class="row wrap small" style="gap:6px">${isW?(u.nat?flag(u.nat)+' '+t('n_'+u.nat):'')+(u.job?' · '+t('p_'+u.job):''):(isCo(u)?coLabel(u):t('p_host'))}${u.verified?` <span class="pill good">${ic('badge',13)} ${t('verified')}</span>`:''}</p>
      <p class="xs muted">${t('member_since',{y:new Date(u.joined).getFullYear()})} · <span dir="ltr">${esc(API.session&&API.session.user.email||'')}</span></p>
      ${S.contacts[u.id]?`<p class="xs muted" dir="ltr">${esc(S.contacts[u.id])}</p>`:''}</div></div></section>
-   <section class="panel stack"><div class="row between" style="align-items:flex-start"><div class="stack" style="gap:4px"><span class="small muted">${isW?t('as_tenant'):t('as_host')}</span>
+   <section class="panel stack"><div class="row between" style="align-items:flex-start"><div class="stack" style="gap:4px"><span class="small muted">${isW?t('as_tenant'):(isCo(u)?t('as_company'):t('as_host'))}</span>
      ${r.n?`<div class="row"><span style="font-size:var(--t-3xl);font-weight:700;line-height:1" class="num">${r.bayes.toFixed(1)}</span>${stars(r.bayes,18)}</div>`:`<span class="pill vis" style="align-self:flex-start">${t('new_badge')}</span>`}
      <span class="small muted">${t('n_reviews',{n:r.n})}</span></div>
      <div class="stack" style="align-items:center;gap:4px">${ring(tr,'',true)}<span class="xs muted">${t('trust')}</span></div></div>
-     ${r.n?critBars(r,isW?H2W:W2H):''}
+     ${r.n?critBars(r,tn?H2W:W2H):''}
      <button type="button" class="btn ghost sm" data-a="sheet" data-s="rules" style="align-self:flex-start">${ic('info',16)} ${t('how_ratings')}</button></section>
-   ${isW?prefsPanel(u):''}
+   ${tn?prefsPanel(u):''}
    <section class="stack" style="gap:10px"><div class="sec-h"><h2>${t('about_you')}</h2></div>${r.list.length?`<div class="panel">${r.list.slice(0,6).map(reviewHTML).join('')}</div>`:`<p class="small muted">${t('no_reviews')}</p>`}</section>
    <section class="stack" style="gap:10px"><div class="sec-h"><h2>${t('language')}</h2></div><div class="langs">${langButtons()}</div></section>
    <div><button type="button" class="btn danger" data-a="logout">${ic('logout',18)} ${t('logout')}</button></div>
@@ -1888,15 +2028,20 @@ function sheetFilters(){
 function stepper(k,v){ return `<span class="stepper"><button type="button" data-a="bkStep" data-k="${k}" data-d="-1" aria-label="-1">−</button><output class="num">${v}</output><button type="button" data-a="bkStep" data-k="${k}" data-d="1" aria-label="+1">+</button></span>`; }
 function sheetBook(){
   const s=UI.sheet, l=L(s.id); if(!l) return '';
-  const total=l.price*s.units*s.months;
+  const u=me(), co=isCo(u), bld=l.type==='building', pu=perUnit(l), mx=maxUnits(l);
+  const monthly=l.price*s.units, total=monthly*s.months;
+  let unitsRow;
+  if(bld) unitsRow=`<div class="row between"><span class="label">${t('t_building')}</span><span class="pill palm">${ic('users',13)} ${t('fits_n',{n:n(pu)})}</span></div>`;
+  else if(co) unitsRow=`<div class="stack" style="gap:8px"><div class="row between wrap"><label class="label" for="bk-units">${t('units_count')}</label>${mx>1&&s.units<mx?`<button type="button" class="btn sm ghost" data-a="bkAll">${t('book_all',{n:n(mx)})}</button>`:''}</div><div class="row">${stepper('units',s.units)}<input class="input num" id="bk-units" data-ch="bkUnits" type="number" inputmode="numeric" min="1" max="${mx}" value="${s.units}" style="width:110px" aria-label="${t('units_count')}"></div><div class="row between small"><span class="muted">${t('fits_n',{n:n(s.units*pu)})}</span><span class="num">${t('per_worker',{p:money(costPerWorker(l))})}</span></div></div>`;
+  else unitsRow=`<div class="row between"><span class="label">${t('units_count')}</span>${stepper('units',s.units)}</div>`;
   return sheetFrame(t('booking_title'),`
    <div class="row" style="gap:12px"><div class="avatar" style="width:60px;height:60px;border-radius:14px">${thumb(l)}</div><div class="stack" style="gap:2px;min-width:0"><b>${esc(pn(l.name))}</b><span class="small muted">${esc(pn(l.district))} · ${t('c_'+l.city)}</span></div></div>
-   <div class="row between"><span class="label">${t('units_count')}</span>${stepper('units',s.units)}</div>
+   ${unitsRow}
    <label class="field"><span>${t('move_in')}</span><input class="input" type="date" id="bk-date" data-in="bkDate" value="${s.date}" min="${todayISO()}"></label>
    <div class="row between"><span class="label">${t('months')}</span>${stepper('months',s.months)}</div>
-   <div class="panel stack" style="gap:6px;background:var(--surface-2)"><div class="row between small muted"><span>${t('monthly')}</span><span class="num">${money(l.price)} × ${s.units} = ${money(l.price*s.units)}</span></div><div class="row between"><b>${t('total')} (${monthsTxt(s.months)})</b><b class="num" style="font-size:var(--t-xl)">${money(total)}</b></div></div>
+   <div class="panel stack" style="gap:6px;background:var(--surface-2)"><div class="row between small muted"><span>${t('monthly')}</span><span class="num">${money(l.price)} × ${n(s.units)} = ${money(monthly)}</span></div><div class="row between"><b>${t('total')} (${monthsTxt(s.months)})</b><b class="num" style="font-size:var(--t-xl)">${money(total)}</b></div></div>
    <p class="note">${ic('info',14)} ${t('pay_note')}</p>`,
-   `<button type="button" class="btn primary block" data-a="bkSend" ${UI.busy?'disabled':''}>${t('send_request')}</button>`);
+   `<button type="button" class="btn primary block" data-a="bkAsk" ${UI.busy?'disabled':''}>${t('send_request')}</button>`);
 }
 function sheetRate(){
   const s=UI.sheet, b=S.bookings.find(x=>x.id===s.booking); if(!b) return '';
@@ -1918,13 +2063,13 @@ function renderSheet(){
   if(!s){ root.innerHTML=''; root.dataset.open=''; document.body.style.overflow=''; return; }
   const fresh = root.dataset.open!==s.type; root.dataset.open=s.type;
   const keep = !fresh && root.querySelector('.sheet') ? root.querySelector('.sheet').scrollTop : 0;
-  root.innerHTML = s.type==='filters'?sheetFilters():s.type==='book'?sheetBook():s.type==='rate'?sheetRate():s.type==='rules'?sheetRules():sheetLang();
+  root.innerHTML = s.type==='confirm'?sheetConfirm():s.type==='filters'?sheetFilters():s.type==='book'?sheetBook():s.type==='rate'?sheetRate():s.type==='rules'?sheetRules():sheetLang();
   document.body.style.overflow='hidden';
   const sc=root.querySelector('.scrim'); if(sc){ if(fresh) sc.classList.add('enter'); else sc.querySelector('.sheet').scrollTop=keep; }
 }
 
 /* ================= app shell & render ================= */
-function tabsFor(u){ return u.role==='worker'?[['explore','search','nav_explore'],['saved','heart','nav_saved'],['bookings','calendar','nav_bookings'],['profile','user','nav_profile']]:[['dash','chart','nav_dash'],['units','grid','nav_units'],['requests','inbox','nav_requests'],['profile','user','nav_profile']]; }
+function tabsFor(u){ return isTenant(u)?[['explore','search','nav_explore'],['saved','heart','nav_saved'],['bookings','calendar','nav_bookings'],['profile','user','nav_profile']]:[['dash','chart','nav_dash'],['units','grid','nav_units'],['requests','inbox','nav_requests'],['profile','user','nav_profile']]; }
 function tabBadge(k){ const u=me(); if(k==='bookings') return S.bookings.filter(b=>b.worker===u.id&&rateOpen(b)&&!hasRated(b,'w2h')).length; if(k==='requests') return S.bookings.filter(b=>b.host===u.id&&(b.status==='pending'||(rateOpen(b)&&!hasRated(b,'h2w')))).length; return 0; }
 function viewApp(){
   const u=me(); if(!u) return viewWelcome();
@@ -1980,7 +2125,7 @@ const A = {
   clearAll(){ UI.f=defaultF(); UI.q=''; UI.type='all'; render(); },
   sheet(el){ const s=el.dataset.s;
     if(s==='filters') UI.sheet={type:'filters',f:JSON.parse(JSON.stringify(UI.f)),ftype:UI.type};
-    else if(s==='book') UI.sheet={type:'book',id:el.dataset.id,units:1,months:6,date:todayISO(7)};
+    else if(s==='book'){ const l=L(el.dataset.id), u=me(); let un=1; if(l&&isCo(u)&&l.type!=='building') un=clamp(Math.ceil((+u.workforce||1)/perUnit(l)),1,maxUnits(l)); UI.sheet={type:'book',id:el.dataset.id,units:un,months:isCo(u)?12:6,date:todayISO(7)}; }
     else UI.sheet={type:s, back:UI.sheet&&UI.sheet.type==='rate'?UI.sheet:null};
     render(); const c=document.querySelector('.sheet [data-a="closeSheet"]'); if(c) c.focus({preventScroll:true}); },
   scrim(){},
@@ -1991,8 +2136,11 @@ const A = {
     else f[k]=!f[k]; renderSheet(); },
   fClear(){ UI.sheet.f=defaultF(); UI.sheet.ftype='all'; renderSheet(); },
   fApply(){ UI.f=UI.sheet.f; UI.type=UI.sheet.ftype; UI.sheet=null; logSearch(); render(); },
-  bkStep(el){ const s=UI.sheet, l=L(s.id), k=el.dataset.k, d=+el.dataset.d; if(k==='units') s.units=clamp(s.units+d,1,Math.max(1,Math.min(l.free,20))); else s.months=clamp(s.months+d,1,24); renderSheet(); },
-  bkSend(){ const s=UI.sheet, l=L(s.id); if(!l) return;
+  bkStep(el){ const s=UI.sheet, l=L(s.id), k=el.dataset.k, d=+el.dataset.d; if(k==='units') s.units=clamp(s.units+d,1,maxUnits(l)); else s.months=clamp(s.months+d,1,isCo(me())?60:24); renderSheet(); },
+  bkAll(){ const s=UI.sheet, l=L(s.id); if(l){ s.units=maxUnits(l); renderSheet(); } },
+  bkAsk(){ UI.sheet={type:'confirm',kind:'book',back:UI.sheet}; render(); },
+  endAsk(el){ UI.sheet={type:'confirm',kind:'end',id:el.dataset.id}; render(); },
+  bkSend(){ const s=UI.sheet.type==='confirm'?UI.sheet.back:UI.sheet, l=L(s.id); if(!l) return;
     return busy(async()=>{ await API.ins('bookings',{listing:l.id,worker:S.userId,host:l.host,units:s.units,months:s.months,move_in:s.date||todayISO(7)}); await sync(); UI.sheet=null; UI.page=null; UI.tab='bookings'; toast(t('request_sent')); window.scrollTo(0,0); }); },
   rate(el){ UI.sheet={type:'rate',booking:el.dataset.id,kind:el.dataset.k,sc:{},text:'',err:''}; render(); },
   rateStar(el){ UI.sheet.sc[el.dataset.c]=+el.dataset.v; UI.sheet.err=''; renderSheet(); const b=document.querySelector(`.sheet [data-c="${el.dataset.c}"][data-v="${el.dataset.v}"]`); if(b) b.focus({preventScroll:true}); },
@@ -2011,12 +2159,15 @@ const A = {
   accept(el){ return busy(async()=>{ await API.upd('bookings','id=eq.'+el.dataset.id,{status:'confirmed'}); await sync(); toast(t('accepted')); }); },
   decline(el){ return busy(async()=>{ await API.upd('bookings','id=eq.'+el.dataset.id,{status:'declined'}); await sync(); toast(t('declined_t')); }); },
   cancelB(el){ return busy(async()=>{ await API.upd('bookings','id=eq.'+el.dataset.id,{status:'cancelled'}); await sync(); }); },
-  endStay(el){ return busy(async()=>{ await API.upd('bookings','id=eq.'+el.dataset.id,{status:'completed'}); await sync(); toast(t('stay_ended')); }); },
+  endStay(el){ return busy(async()=>{ await API.upd('bookings','id=eq.'+el.dataset.id,{status:'completed'}); await sync(); UI.sheet=null; toast(t('stay_ended')); }); },
   free(el){ const l=L(el.dataset.id); if(!l) return; l.free=clamp(l.free+(+el.dataset.d),0,l.total); touch(); render();
     clearTimeout(FREE_T[l.id]); FREE_T[l.id]=setTimeout(()=>{ API.upd('listings','id=eq.'+l.id,{free:l.free}).catch(e=>{ toast(errMsg(e)); sync().then(render).catch(()=>{}); }); },600); },
   delL(el){ const id=el.dataset.id; if(UI.confirmDel!==id){ UI.confirmDel=id; render(); return; }
     return busy(async()=>{ const l=L(id); const res=await API.rpc('remove_listing',{lid:id}); if(res==='deleted' && l) l.media.forEach(m=>{ if(m.path) API.removeFile(m.path).catch(()=>{}); }); UI.confirmDel=null; await sync(); toast(res==='archived'?t('archived_t'):t('deleted')); }); },
   allRev(){ UI.allRev=!UI.allRev; render(); },
+  async trReview(el){ const rv=S.reviews.find(x=>x.id===el.dataset.id); if(!rv||!AIX.ok) return; UI.tr=rv.id; render();
+    try{ const res=await AIX.call({task:'translate',to:LANG,text:rv.text.s}); if(res&&res.text) UI.trCache['rv:'+rv.id+':'+LANG]=res.text.trim(); }catch(e){ aiFail(e); }
+    UI.tr=null; render(); },
   edNew(){ go(()=>{ UI.page={type:'editor',id:null,d:draftFrom(null)}; UI.confirmDel=null; UI.formErr=null; }); },
   edEdit(el){ const l=L(el.dataset.id); if(!l) return; go(()=>{ UI.page={type:'editor',id:l.id,d:draftFrom(l)}; UI.confirmDel=null; UI.formErr=null; }); },
   edCancel(){ const d=UI.page.d; d._new.forEach(p=>API.removeFile(p).catch(()=>{})); d.media.forEach(m=>{ if(m.up) m.cancel=true; }); go(()=>{ UI.page=null; UI.formErr=null; }); },
@@ -2025,24 +2176,25 @@ const A = {
   edMediaDel(el){ const d=UI.page.d, m=d.media.splice(+el.dataset.i,1)[0]; if(m){ if(m.up) m.cancel=true; else if(d._new.includes(m.path)){ API.removeFile(m.path).catch(()=>{}); d._new.splice(d._new.indexOf(m.path),1); } else if(m.path) d._removed.push(m.path); } render(); },
   edSave(){ const pg=UI.page, d=pg.d;
     if(d.uploading>0){ toast(t('wait_upload')); return; }
-    const price=Math.round(+d.price), total=Math.round(+d.total); let free=d.free===''?total:Math.round(+d.free);
+    const bld=d.type==='building', old=pg.id?L(pg.id):null; const price=Math.round(+d.price), total=bld?1:Math.round(+d.total); let free=bld?(old&&old.type==='building'?old.free:1):(d.free===''?total:Math.round(+d.free));
     if(!(d.name_ar||d.name_en).trim()||!String(d.district).trim()||!(price>0)||!(total>0)){ UI.formErr=t('required_fields'); render(); const e=document.getElementById('form-err'); if(e) e.scrollIntoView({block:'center',behavior:'smooth'}); return; }
+    if(bld && !(+d.capacity>=1)){ UI.formErr=t('need_capacity'); render(); const e=document.getElementById('form-err'); if(e) e.scrollIntoView({block:'center',behavior:'smooth'}); return; }
     free=clamp(isNaN(free)?total:free,0,total);
     const near=String(d.near||'').trim();
-    const payload={name:{ar:(d.name_ar||d.name_en).trim(),en:(d.name_en||d.name_ar).trim()},type:d.type,city:d.city,district:String(d.district).trim(),near:{ar:near,en:near,km:Math.max(0,+d.km||0)},gender:d.gender,price,total,free,amen:d.amen,rules:d.rules,langs:d.langs,licensed:!!d.licensed,descr:{ar:d.desc_ar.trim(),en:d.desc_en.trim()},media:d.media.filter(m=>!m.up&&m.path).map(m=>({kind:m.kind,path:m.path}))};
+    const payload={name:{ar:(d.name_ar||d.name_en).trim(),en:(d.name_en||d.name_ar).trim()},type:d.type,city:d.city,district:String(d.district).trim(),near:{ar:near,en:near,km:Math.max(0,+d.km||0)},gender:d.gender,price,total,free,capacity:(bld||['room','studio','apt'].includes(d.type))&&+d.capacity>0?Math.round(+d.capacity):null,apartments:bld&&+d.apartments>0?Math.round(+d.apartments):null,amen:d.amen,rules:d.rules,langs:d.langs,licensed:!!d.licensed,descr:{ar:d.desc_ar.trim(),en:d.desc_en.trim()},media:d.media.filter(m=>!m.up&&m.path).map(m=>({kind:m.kind,path:m.path}))};
     return busy(async()=>{
       if(pg.id) await API.upd('listings','id=eq.'+pg.id,payload); else await API.ins('listings',Object.assign({host:S.userId},payload));
       d._removed.forEach(p=>API.removeFile(p).catch(()=>{}));
       await sync(); toast(pg.id?t('saved_ok'):t('published')); UI.page=null; UI.tab='units'; UI.formErr=null; window.scrollTo(0,0);
     }, 'form'); },
-  async aiWrite(){ const pg=UI.page, d=pg.d; if(!SAMPLE) return; pg.aiBusy=true; render();
-    const facts={name:d.name_ar||d.name_en,city:T['c_'+d.city][1],district:d.district,type:T['t_'+d.type][1],for:T['g_'+d.gender][1],price_sar_per_month:+d.price||null,units:+d.total||null,available_now:+d.free||null,amenities:d.amen.map(a=>T['a_'+a][1]),house_rules:d.rules.map(r=>T['r_'+r][1]),nearest_work_area:d.near||null,distance_km:+d.km||null,licensed:d.licensed};
-    try{ const out=await SAMPLE.json('You write short, factual rental descriptions for worker housing in Saudi Arabia. Using only the facts below, write 2 to 4 plain sentences in Arabic and the same content in English. Do not invent facts, prices, distances or services that are not given, and skip facts that are null. Reply with only JSON: {"ar": "...", "en": "..."}\n\nFacts: '+JSON.stringify(facts),{modelTier:'quick'});
+  async aiWrite(){ const pg=UI.page, d=pg.d; if(!AIX.ok) return; pg.aiBusy=true; render();
+    const facts={name:d.name_ar||d.name_en,city:T['c_'+d.city][1],district:d.district,type:T['t_'+d.type][1],for:T['g_'+d.gender][1],price_sar_per_month:+d.price||null,units:+d.total||null,available_now:+d.free||null,capacity_workers:+d.capacity||null,apartments:+d.apartments||null,amenities:d.amen.map(a=>T['a_'+a][1]),house_rules:d.rules.map(r=>T['r_'+r][1]),nearest_work_area:d.near||null,distance_km:+d.km||null,licensed:d.licensed};
+    try{ const out=await AIX.call({task:'describe',facts});
       if(UI.page===pg){ if(out&&typeof out.ar==='string') d.desc_ar=out.ar.trim(); if(out&&typeof out.en==='string') d.desc_en=out.en.trim(); }
     }catch(e){ aiFail(e); }
     pg.aiBusy=false; render(); },
-  async translate(el){ const l=L(el.dataset.id); if(!SAMPLE||!l) return; const src=l.desc.en||l.desc.ar; UI.tr=l.id; render();
-    try{ const res=await SAMPLE('Translate this worker-housing listing description into '+LANG_EN[LANG]+'. Keep numbers and place names. Reply with only the translation.\n\n'+src,{modelTier:'quick'}); if(res&&res.text) UI.trCache[l.id+':'+LANG]=res.text.trim(); }
+  async translate(el){ const l=L(el.dataset.id); if(!AIX.ok||!l) return; const src=l.desc.en||l.desc.ar; UI.tr=l.id; render();
+    try{ const res=await AIX.call({task:'translate',to:LANG,text:src}); if(res&&res.text) UI.trCache[l.id+':'+LANG]=res.text.trim(); }
     catch(e){ aiFail(e); }
     UI.tr=null; render(); },
   lang(el){ LANG=el.dataset.v; saveLang(); touch(); if(UI.sheet&&UI.sheet.type==='lang') UI.sheet=null; render(); },
@@ -2054,18 +2206,21 @@ const A = {
   regToggle(el){ const arr=UI.reg.amen, v=el.dataset.v, i=arr.indexOf(v); if(i>=0) arr.splice(i,1); else arr.push(v); render(); },
   regSubmit(){ const r=UI.reg; const fail=m=>{ UI.formErr=m; render(); };
     if(!r.name.trim()||r.phone.replace(/\D/g,'').length<9) return fail(t('need_name'));
+    if(r.role==='company'){ if(String(r.cr).trim() && !/^\d{10}$/.test(String(r.cr).trim())) return fail(t('cr_bad')); if(!(+r.workforce>=1)) return fail(t('workforce')); }
     if(!r.complete){ if(!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(r.email.trim())) return fail(t('err_email')); if(r.password.length<6) return fail(t('err_weak')); }
     return busy(async()=>{
       if(!r.complete){ await API.signUp(r.email.trim(), r.password); r.complete=true; r.password=''; }
       const uid=API.uid();
       const prof = r.role==='worker'
         ? {id:uid,role:'worker',name:r.name.trim(),nat:r.nat,job:r.job,lang:NAT_LANG[r.nat]||LANG,gender:r.gender,av:r.av,city:r.city,prefs:{city:r.city,budget:r.budget,amen:r.amen.slice()}}
+        : r.role==='company'
+        ? {id:uid,role:'company',name:r.name.trim(),cr:String(r.cr).trim()||null,workforce:Math.round(+r.workforce),gender:r.gender,lang:LANG,av:{logo:true,name:r.name.trim(),initials:initials(r.name)||'CO',bg:'#1F3B57',fg:'#FFFFFF'},city:r.city,prefs:{city:r.city,budget:r.budget,amen:r.amen.slice()}}
         : {id:uid,role:'host',name:r.name.trim(),av:r.hav==='logo'?{logo:true,name:r.name.trim(),initials:initials(r.name)||'AV',bg:'#0D6352',fg:'#FFFFFF'}:HOST_AVS[r.hav],city:r.city};
       try{ await API.ins('profiles',prof); }catch(e){ if(String(e.code)!=='23505') throw e; }
       try{ await API.ins('contacts',{id:uid,phone:r.phone.trim()}); }catch(e){ if(String(e.code)!=='23505') throw e; }
       await sync();
       UI.view=null; UI.reg=null; UI.tab=null; UI.page=null; UI.formErr=null;
-      if(r.role==='worker') logSearch();
+      if(r.role!=='host') logSearch();
       window.scrollTo(0,0);
     }, 'form'); },
   loginSubmit(){ const f=UI.login;
@@ -2075,12 +2230,13 @@ const A = {
       if(has){ UI.view=null; UI.tab=null; UI.page=null; } else { UI.reg=regDefaults('worker'); UI.reg.complete=true; UI.view='register'; }
       window.scrollTo(0,0); }, 'form'); },
   pref(el){ const p=UI.prefs, k=el.dataset.k, v=el.dataset.v; if(k==='city') p.city=v; else { p.amen=p.amen||[]; const i=p.amen.indexOf(v); if(i>=0) p.amen.splice(i,1); else p.amen.push(v); } render(); },
-  savePrefs(){ return busy(async()=>{ await API.upd('profiles','id=eq.'+S.userId,{prefs:UI.prefs}); await sync(); UI.prefs=null; toast(t('saved_ok')); }); },
+  savePrefs(){ const pr=Object.assign({},UI.prefs), wf=pr._wf; delete pr._wf; const patch={prefs:pr}; if(isCo(me()) && +wf>=1) patch.workforce=Math.round(+wf);
+    return busy(async()=>{ await API.upd('profiles','id=eq.'+S.userId,patch); await sync(); UI.prefs=null; toast(t('saved_ok')); }); },
   copy(el){ const v=el.dataset.v; try{ navigator.clipboard.writeText(v).then(()=>toast(t('copied')),()=>{}); }catch(e){} },
   refreshNow(){ return busy(async()=>{ await sync(); }); },
   retryLoad(){ loadAll(); }
 };
-function aiFail(e){ const c=e&&e.code; if(['not_granted','sampling_disabled','not_declared','capability_disabled','capability_removed'].includes(c)) AI_OFF=true; if(c!=='cancelled') toast(t('ai_unavailable')); }
+function aiFail(e){ toast(errMsg(e)); }
 
 /* ================= inputs ================= */
 let qT;
@@ -2093,6 +2249,7 @@ const IN = {
   prefBudget(el){ UI.prefs.budget=+el.value; document.getElementById('pref-b').textContent=money(UI.prefs.budget); },
   ed(el){ UI.page.d[el.name]=el.value; const q=document.getElementById('qbox'); if(q) q.innerHTML=qualityBox(); },
   rateText(el){ UI.sheet.text=el.value; },
+  prefWf(el){ UI.prefs._wf=el.value; },
   bkDate(el){ UI.sheet.date=el.value; }
 };
 async function compressImage(file){
@@ -2104,6 +2261,7 @@ async function compressImage(file){
   }catch(e){ return file; } finally{ URL.revokeObjectURL(url); }
 }
 const CH = {
+  bkUnits(el){ const s=UI.sheet, l=L(s.id); if(l){ s.units=clamp(Math.round(+el.value)||1,1,maxUnits(l)); renderSheet(); } },
   sort(el){ UI.sort=el.value; const r=document.getElementById('results'); if(r) r.innerHTML=resultsHTML(sortList(filtered())); },
   reg(el){ UI.reg[el.name]=el.value; suggestAv(); render(); },
   edLic(el){ UI.page.d.licensed=el.checked; const q=document.getElementById('qbox'); if(q) q.innerHTML=qualityBox(); },
@@ -2151,7 +2309,7 @@ function quietSync(){ if(!canAutoSync()) return; sync().then(()=>{ if(canAutoSyn
 setInterval(quietSync, 30000);
 document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') quietSync(); });
 
-function initAI(){ try{ if(window.claude && typeof window.claude.use==='function'){ window.claude.use('sample').then(s=>{ if(s){ SAMPLE=s; render(); } }).catch(()=>{}); } }catch(e){} }
+function initAI(){ AIX.init(); }
 async function loadAll(){
   UI.loadErr=null; UI.view='loading'; render();
   try{
